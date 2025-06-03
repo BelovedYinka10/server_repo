@@ -20,7 +20,7 @@ app = Flask(__name__)
 set_mode("512")
 
 # === Key File Paths ===
-KEY_DIR = "/Users/mac/Desktop/project/api/keys"
+KEY_DIR = ".\keys"
 pubkey_path = os.path.join(KEY_DIR, "server_pubkey.bin")
 seckey_path = os.path.join(KEY_DIR, "server_seckey.bin")
 
@@ -176,4 +176,5 @@ def ecg_viewer():
 
 if __name__ == "__main__":
     print(f"[SERVER STARTED] Public Key Path: {pubkey_path}")
-    app.run(debug=True)
+    app.run(host="0.0.0.0", port=5000, debug=True)
+

@@ -25,7 +25,7 @@ MarkupSafe==3.0.2
 matplotlib==3.9.4
 multidict==6.4.4
 narwhals==1.41.0
-numpy==2.0.2
+numpy
 packaging==25.0
 pandas==2.2.3
 pillow==11.2.1
@@ -36,7 +36,7 @@ pyparsing==3.2.3
 python-dateutil==2.9.0.post0
 pytz==2025.2
 requests==2.32.3
-scipy==1.13.1
+scipy
 six==1.17.0
 smaj_kyber==0.1.3
 soundfile==0.13.1
