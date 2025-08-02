@@ -1,11 +1,22 @@
-<!-- templates/ecg_viewer.html -->
 <!DOCTYPE html>
 <html>
 <head>
     <title>ECG Viewer</title>
 </head>
-<body>
-    <h2>Decrypted ECG Plot</h2>
-    {{ graph_html | safe }}
+<body style="font-family:sans-serif; text-align:center;">
+    <h1>ECG Viewer - Athlete {{ athlete_index }}</h1>
+    <div>{{ graph_html | safe }}</div>
+
+    <div style="margin-top: 30px;">
+        <a href="{{ url_for('ecg_viewer', athlete=prev_index) }}">
+            <button>&larr; Previous</button>
+        </a>
+
+        <span style="margin: 0 15px; font-weight: bold;">Athlete {{ athlete_index }}</span>
+
+        <a href="{{ url_for('ecg_viewer', athlete=next_index) }}">
+            <button>Next &rarr;</button>
+        </a>
+    </div>
 </body>
 </html>
