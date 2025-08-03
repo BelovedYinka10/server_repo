@@ -3,31 +3,45 @@ import json
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
-from flask import Flask, request, render_template, send_file,jsonify
+from flask import Flask, request, render_template, send_file, jsonify
 from smaj_kyber import keygen, decapsulate, set_mode
 from pyascon.ascon import ascon_decrypt
 from hl7apy.parser import parse_message
+from kyber_py.ml_kem import ML_KEM_512
+import base64
+import time
+import cycles  # Your custom rdtsc module
 
 
 app = Flask(__name__)
-
-# === Set Kyber Mode ===
-set_mode("512")
-
-print("hii")
 
 # === Key Paths ===
 KEY_DIR = os.path.join(app.root_path, "keys")
 pubkey_path = os.path.join(KEY_DIR, "server_pubkey.bin")
 seckey_path = os.path.join(KEY_DIR, "server_seckey.bin")
+import tracemalloc  # Make sure this is imported at the top
 
 # === Generate or Load Kyber Keys ===
+import tracemalloc  # Make sure this is imported at the top
+
 try:
     os.makedirs(KEY_DIR, exist_ok=True)
 
     if not os.path.exists(pubkey_path) or not os.path.exists(seckey_path):
+
+        tracemalloc.start()
+        start_keygen_time = time.perf_counter()  # Best for measuring short durations
+        start_keygen_cycles = cycles.rdtsc()
+        pk, sk = ML_KEM_512.keygen()
+        end_keygen_cycles = cycles.rdtsc()
+        end_keygen_time = time.perf_counter()
+        current, peak = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
+        keygen_elapsed_time=end_keygen_time - start_keygen_time
+        print(f"Elapsed time for ascon encryption: {keygen_elapsed_time:.6f} seconds")
+        print(f"[Cycles] Ascon  encrypt cycle: {end_keygen_cycles - start_keygen_cycles} cycles")
+        print(f"[Memory] Kyber keygen - Current: {current / 1024:.1f} KB | Peak: {peak / 1024:.1f} KB")
         print("[INFO] Generating new Kyber keypair...")
-        pk, sk = keygen()
         with open(pubkey_path, "wb") as f:
             f.write(pk)
         with open(seckey_path, "wb") as f:
@@ -36,6 +50,7 @@ try:
         print("[INFO] Loading existing Kyber keys...")
         with open(pubkey_path, "rb") as f:
             pk = f.read()
+            print("pk", pk)
         with open(seckey_path, "rb") as f:
             sk = f.read()
 except Exception as e:
@@ -56,37 +71,72 @@ def get_kyber_pubkey():
 @app.route("/secure-ecg", methods=["POST"])
 def secure_ecg():
     print("[SERVER] Received POST /secure-ecg")
+
     if not request.is_json:
         return "Expected JSON payload", 400
 
-    try:
-        data = request.get_json(force=True)
-        nonce = bytes.fromhex(data["nonce"])
-        ciphertext = bytes.fromhex(data["ciphertext"])
-        kyber_ct = bytes.fromhex(data["kyber_ciphertext"])
-        athlete_id = data["id"]
+    data = request.get_json(force=True)
 
-        shared_secret = decapsulate(kyber_ct, sk)
-        key = shared_secret[:16]
+    nonce = base64.b64decode(data["nonce"])
+    ciphertext = base64.b64decode(data["ciphertext"])
+    kyber_ct = base64.b64decode(data["kyber_ciphertext"])
 
-        decrypted = ascon_decrypt(key=key, nonce=nonce, ciphertext=ciphertext, associateddata=b"")
-        if decrypted is None:
-            return "Decryption failed", 400
+    print("server_raw_ct", kyber_ct)
 
-        records = json.loads(decrypted.decode())
-        df = pd.DataFrame(records)
+    athlete_id = data["id"]
 
-        athlete_dir = os.path.join(app.root_path, "static", f"athlete_{athlete_id}")
-        os.makedirs(athlete_dir, exist_ok=True)
-        save_path = os.path.join(athlete_dir, "decrypted_ecg.json")
-        df.to_json(save_path, orient="records")
+    # === Measure memory for Kyber decapsulation ===
+    import tracemalloc
+    tracemalloc.start()
+    start_decaps_time = time.perf_counter()  # Best for measuring short durations
+    start_decaps_cycles = cycles.rdtsc()
+    shared_secret = ML_KEM_512.decaps(sk, kyber_ct)
+    end_decaps_cycles = cycles.rdtsc()
+    end_decaps_time = time.perf_counter()  # Best for measuring short durations
+    snapshot_decaps = tracemalloc.take_snapshot()
+    top_decaps = snapshot_decaps.statistics('lineno')
+    decaps_elapsed_time =end_decaps_time - start_decaps_time
 
-        print(f"[INFO] ECG data saved to {save_path}")
-        return "ECG received and decrypted successfully", 200
 
-    except Exception as e:
-        print("[ERROR] Exception:", e)
-        return f"Error: {e}", 500
+    print("\n[Memory] Kyber decapsulation:")
+    for i, stat in enumerate(top_decaps[:5], 1):
+        print(f"{i}. {stat}")
+    current, peak = tracemalloc.get_traced_memory()
+
+    print(f"Elapsed time for decaps : {decaps_elapsed_time:.6f} seconds")
+    print(f"[Cycles] decaps cycle: {end_decaps_cycles - start_decaps_cycles} cycles")
+    print(f"[Peak Mem] Kyber decaps - Current: {current / 1024:.1f} KB | Peak: {peak / 1024:.1f} KB")
+    tracemalloc.stop()
+    key = shared_secret[:16]
+    # === Measure memory for Ascon decryption ===
+    tracemalloc.start()
+    start_decrypt_time = time.perf_counter()  # Best for measuring short durations
+    start_decrypt_cycles = cycles.rdtsc()
+    decrypted = ascon_decrypt(key=key, nonce=nonce, ciphertext=ciphertext, associateddata=b"")
+    end_decrypt_cycles = cycles.rdtsc()
+    end_decrypt_time = time.perf_counter()  # Best for measuring short durations
+    snapshot_decrypt = tracemalloc.take_snapshot()
+    top_decrypt = snapshot_decrypt.statistics('lineno')
+    print("\n[Memory] Ascon decryption:")
+    for i, stat in enumerate(top_decrypt[:5], 1):
+        print(f"{i}. {stat}")
+    current, peak = tracemalloc.get_traced_memory()
+    decrypt_elapsed_time = end_decrypt_time - start_decrypt_time
+    print(f"Elapsed time for decrypt : {decrypt_elapsed_time:.6f} seconds")
+    print(f"[Cycles] decrypt cycle: {end_decrypt_cycles - start_decrypt_cycles} cycles")
+    print(f"[Peak Mem] Ascon decrypt - Current: {current / 1024:.1f} KB | Peak: {peak / 1024:.1f} KB")
+    tracemalloc.stop()
+    if decrypted is None:
+        return "Decryption failed", 400
+
+    records = json.loads(decrypted.decode())
+    df = pd.DataFrame(records)
+    athlete_dir = os.path.join(app.root_path, "static", f"athlete_{athlete_id}")
+    os.makedirs(athlete_dir, exist_ok=True)
+    save_path = os.path.join(athlete_dir, "decrypted_ecg.json")
+    df.to_json(save_path, orient="records")
+    print(f"[INFO] ECG data saved to {save_path}")
+    return "ECG received and decrypted successfully", 200
 
 
 @app.route("/ecg-viewer")
@@ -113,7 +163,8 @@ def ecg_viewer():
         fig = go.Figure()
         for i, lead in enumerate(lead_names):
             y = (df[lead].to_numpy() + vertical_offsets[i]).tolist()
-            fig.add_trace(go.Scatter(x=time.tolist(), y=y, mode='lines', line=dict(color='black', width=1), showlegend=False))
+            fig.add_trace(
+                go.Scatter(x=time.tolist(), y=y, mode='lines', line=dict(color='black', width=1), showlegend=False))
 
         duration = time[-1] if len(time) > 0 else 0
         shapes = []
@@ -127,7 +178,8 @@ def ecg_viewer():
         fig.update_layout(
             title=f"12-Lead ECG Viewer: Athlete {athlete_index}",
             xaxis=dict(title="Time (seconds)", showgrid=False, zeroline=False),
-            yaxis=dict(tickmode='array', tickvals=vertical_offsets, ticktext=lead_names, showgrid=False, zeroline=False),
+            yaxis=dict(tickmode='array', tickvals=vertical_offsets, ticktext=lead_names, showgrid=False,
+                       zeroline=False),
             shapes=shapes,
             template="simple_white",
             height=800,
@@ -141,25 +193,25 @@ def ecg_viewer():
                                next_index=min(28, athlete_index + 1))
     except Exception as e:
         return f"❌ Failed to render ECG viewer: {e}", 500
-    
+
+
 @app.route('/receive-hl7', methods=['POST'])
 def receive_hl7():
     hl7_msg = request.data.decode('utf-8')
-    
+
     try:
         # Parse the HL7 message
         msg = parse_message(hl7_msg)
-        
+
         # Extract data
         patient_id = msg.pid.pid_3.value
         patient_name = msg.pid.pid_5.value
         location = msg.pv1.pv1_3.value
 
-
-        print("HLS 7 DATA REEIVED",{
-            "PATIENT_ID" :  patient_id
+        print("HLS 7 DATA REEIVED", {
+            "PATIENT_ID": patient_id
         })
-        
+
         return jsonify({
             "status": "Message received",
             "patient_id": patient_id,
@@ -174,28 +226,25 @@ def receive_hl7():
 def receive_encyrpted_hl7():
     hl7_msg = request.data.decode('utf-8')
 
-    
     try:
         # Parse the HL7 message
         msg = parse_message(hl7_msg)
 
         print(
-            msg.to_er7().replace("\r","\n")        )
-        
+            msg.to_er7().replace("\r", "\n"))
+
         # Extract data
         # patient_id = msg.pid.pid_3.value
         # patient_name = msg.pid.pid_5.value
         # location = msg.pv1.pv1_3.value
 
+        print("vvv", msg.obx.obx_5.value)
 
-        print("vvv",msg.obx.obx_5.value)
-
-
-        print("HLS 7 DATA REEIVED",{
-            "PATIENT_ID" :  "patient_id"
+        print("HLS 7 DATA REEIVED", {
+            "PATIENT_ID": "patient_id"
 
         })
-        
+
         return jsonify({
             "status": "Message received",
             # "patient_id": patient_id,
@@ -205,6 +254,7 @@ def receive_encyrpted_hl7():
     except Exception as e:
         return jsonify({"error": str(e)}), 400
 
+
 if __name__ == "__main__":
     print(f"[SERVER STARTED] Public Key Path: {pubkey_path}")
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    app.run(host="0.0.0.0", port=5070, debug=True)
