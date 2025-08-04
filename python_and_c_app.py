@@ -2,6 +2,7 @@ import os
 import json
 import numpy as np
 import pandas as pd
+import tracemalloc  # Make sure this is imported at the top
 import plotly.graph_objects as go
 from flask import Flask, request, render_template, send_file, jsonify
 from smaj_kyber import keygen, decapsulate, set_mode
@@ -11,6 +12,7 @@ from kyber_py.ml_kem import ML_KEM_512
 import base64
 import time
 import cycles  # Your custom rdtsc module
+import ctypes
 
 app = Flask(__name__)
 
@@ -18,10 +20,48 @@ app = Flask(__name__)
 KEY_DIR = os.path.join(app.root_path, "keys")
 pubkey_path = os.path.join(KEY_DIR, "server_pubkey.bin")
 seckey_path = os.path.join(KEY_DIR, "server_seckey.bin")
-import tracemalloc  # Make sure this is imported at the top
 
-# === Generate or Load Kyber Keys ===
-import tracemalloc  # Make sure this is imported at the top
+# Load the shared library
+lib = ctypes.CDLL(os.path.abspath("./libascon.dylib"))
+
+Uint8Array = ctypes.POINTER(ctypes.c_ubyte)
+ULongPtr = ctypes.POINTER(ctypes.c_ulonglong)
+
+# Define function prototypes
+lib.crypto_aead_encrypt.argtypes = [Uint8Array, ULongPtr, Uint8Array, ctypes.c_ulonglong,
+                                    Uint8Array, ctypes.c_ulonglong, Uint8Array,
+                                    Uint8Array, Uint8Array]
+lib.crypto_aead_encrypt.restype = ctypes.c_int
+
+lib.crypto_aead_decrypt.argtypes = [Uint8Array, ULongPtr, Uint8Array, Uint8Array,
+                                    ctypes.c_ulonglong, Uint8Array, ctypes.c_ulonglong,
+                                    Uint8Array, Uint8Array]
+lib.crypto_aead_decrypt.restype = ctypes.c_int
+
+# === Use a real Python string ===
+message = "Hello, ECG Server 👋🏽 Secure transmission in progress."
+
+msg_bytes = message.encode("utf-8")
+
+msg_len = len(msg_bytes)
+
+ad = b""  # No associated data
+
+key = b"\x00" * 16
+
+nonce = b"\x01" * 16
+
+# Prepare buffers
+msg_buf = (ctypes.c_ubyte * msg_len).from_buffer_copy(msg_bytes)
+
+ad_buf = (ctypes.c_ubyte * len(ad))(*ad) if ad else None
+
+key_buf = (ctypes.c_ubyte * 16).from_buffer_copy(key)
+
+
+cipher_len = ctypes.c_ulonglong(msg_len + 16)
+
+cipher_buf = (ctypes.c_ubyte * cipher_len.value)()
 
 try:
     os.makedirs(KEY_DIR, exist_ok=True)
@@ -31,7 +71,7 @@ try:
         tracemalloc.start()
         start_keygen_time = time.perf_counter()  # Best for measuring short durations
         start_keygen_cycles = cycles.rdtsc()
-        pk, sk = ML_KEM_512.keygen()
+        pk, sk = keygen()
         end_keygen_cycles = cycles.rdtsc()
         end_keygen_time = time.perf_counter()
         current, peak = tracemalloc.get_traced_memory()
@@ -61,12 +101,6 @@ except Exception as e:
 def index():
     return render_template("index.html")
 
-
-@app.route("/kyber-public-key", methods=["GET"])
-def get_kyber_pubkey():
-    return send_file(pubkey_path, mimetype="application/octet-stream")
-
-
 @app.route("/secure-ecg", methods=["POST"])
 def secure_ecg():
     print("[SERVER] Received POST /secure-ecg")
@@ -75,21 +109,17 @@ def secure_ecg():
         return "Expected JSON payload", 400
 
     data = request.get_json(force=True)
-
     nonce = base64.b64decode(data["nonce"])
     ciphertext = base64.b64decode(data["ciphertext"])
     kyber_ct = base64.b64decode(data["kyber_ciphertext"])
-
     print("server_raw_ct", kyber_ct)
-
     athlete_id = data["id"]
-
     # === Measure memory for Kyber decapsulation ===
     import tracemalloc
     tracemalloc.start()
     start_decaps_time = time.perf_counter()  # Best for measuring short durations
     start_decaps_cycles = cycles.rdtsc()
-    shared_secret = ML_KEM_512.decaps(sk, kyber_ct)
+    shared_secret = decapsulate(kyber_ct, sk)
     end_decaps_cycles = cycles.rdtsc()
     end_decaps_time = time.perf_counter()  # Best for measuring short durations
     snapshot_decaps = tracemalloc.take_snapshot()
@@ -110,7 +140,44 @@ def secure_ecg():
     tracemalloc.start()
     start_decrypt_time = time.perf_counter()  # Best for measuring short durations
     start_decrypt_cycles = cycles.rdtsc()
-    decrypted = ascon_decrypt(key=key, nonce=nonce, ciphertext=ciphertext, associateddata=b"")
+    # msg_out_buf = (ctypes.c_ubyte * msg_len)()
+    # msg_out_len = ctypes.c_ulonglong(0)
+
+    msg_out_buf = (ctypes.c_ubyte * len(ciphertext))()
+    msg_out_len = ctypes.c_ulonglong(0)
+
+    nonce_buf = (ctypes.c_ubyte * 16).from_buffer_copy(nonce)
+
+    cipher_len = ctypes.c_ulonglong(len(ciphertext))
+    cipher_buf = (ctypes.c_ubyte * cipher_len.value).from_buffer_copy(ciphertext)
+
+    print("[INFO] Preparing decryption...")
+    print("Shared secret (first 16 bytes):", shared_secret[:16].hex())
+    print("Ciphertext length (decoded):", len(ciphertext))
+
+
+    print("hhiii")
+    dec_result = lib.crypto_aead_decrypt(msg_out_buf,
+                                         ctypes.byref(msg_out_len),
+                                         None,
+                                         cipher_buf,
+                                         cipher_len.value,
+                                         ad_buf,
+                                         len(ad) if ad else 0,
+                                         nonce_buf,
+                                         key_buf)
+
+    print("bbb")
+
+
+    decrypted = bytes(msg_out_buf[:msg_out_len.value])
+    print(f"[Decryption] Success? {dec_result == 0}, Plaintext length: {msg_out_len.value} bytes")
+    # Atempt to decode and print the string
+    try:
+        print("[Decrypted String]:", decrypted.decode('utf-8'))
+    except UnicodeDecodeError as e:
+        print("[Decrypted Bytes]:", decrypted)
+        print("[Decode Error]:", e)
     end_decrypt_cycles = cycles.rdtsc()
     end_decrypt_time = time.perf_counter()  # Best for measuring short durations
     snapshot_decrypt = tracemalloc.take_snapshot()
@@ -135,6 +202,12 @@ def secure_ecg():
     df.to_json(save_path, orient="records")
     print(f"[INFO] ECG data saved to {save_path}")
     return "ECG received and decrypted successfully", 200
+
+@app.route("/kyber-public-key", methods=["GET"])
+def get_kyber_pubkey():
+    return send_file(pubkey_path, mimetype="application/octet-stream")
+
+
 
 
 @app.route("/ecg-viewer")
