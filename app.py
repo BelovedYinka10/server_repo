@@ -10,7 +10,8 @@ from hl7apy.parser import parse_message
 from kyber_py.ml_kem import ML_KEM_512
 import base64
 import time
-import cycles  # Your custom rdtsc module
+# import cycles  # Your custom rdtsc module
+
 
 app = Flask(__name__)
 
@@ -30,15 +31,15 @@ try:
 
         tracemalloc.start()
         start_keygen_time = time.perf_counter()  # Best for measuring short durations
-        start_keygen_cycles = cycles.rdtsc()
+        # start_keygen_cycles = cycles.rdtsc()
         pk, sk = ML_KEM_512.keygen()
-        end_keygen_cycles = cycles.rdtsc()
+        # end_keygen_cycles = cycles.rdtsc()
         end_keygen_time = time.perf_counter()
         current, peak = tracemalloc.get_traced_memory()
         tracemalloc.stop()
-        keygen_elapsed_time = end_keygen_time - start_keygen_time
+        keygen_elapsed_time=end_keygen_time - start_keygen_time
         print(f"Elapsed time for ascon encryption: {keygen_elapsed_time:.6f} seconds")
-        print(f"[Cycles] Ascon  encrypt cycle: {end_keygen_cycles - start_keygen_cycles} cycles")
+        # print(f"[Cycles] Ascon  encrypt cycle: {end_keygen_cycles - start_keygen_cycles} cycles")
         print(f"[Memory] Kyber keygen - Current: {current / 1024:.1f} KB | Peak: {peak / 1024:.1f} KB")
         print("[INFO] Generating new Kyber keypair...")
         with open(pubkey_path, "wb") as f:
@@ -88,13 +89,14 @@ def secure_ecg():
     import tracemalloc
     tracemalloc.start()
     start_decaps_time = time.perf_counter()  # Best for measuring short durations
-    start_decaps_cycles = cycles.rdtsc()
+    # start_decaps_cycles = cycles.rdtsc()
     shared_secret = ML_KEM_512.decaps(sk, kyber_ct)
-    end_decaps_cycles = cycles.rdtsc()
+    # end_decaps_cycles = cycles.rdtsc()
     end_decaps_time = time.perf_counter()  # Best for measuring short durations
     snapshot_decaps = tracemalloc.take_snapshot()
     top_decaps = snapshot_decaps.statistics('lineno')
-    decaps_elapsed_time = end_decaps_time - start_decaps_time
+    decaps_elapsed_time =end_decaps_time - start_decaps_time
+
 
     print("\n[Memory] Kyber decapsulation:")
     for i, stat in enumerate(top_decaps[:5], 1):
@@ -102,16 +104,16 @@ def secure_ecg():
     current, peak = tracemalloc.get_traced_memory()
 
     print(f"Elapsed time for decaps : {decaps_elapsed_time:.6f} seconds")
-    print(f"[Cycles] decaps cycle: {end_decaps_cycles - start_decaps_cycles} cycles")
+    # print(f"[Cycles] decaps cycle: {end_decaps_cycles - start_decaps_cycles} cycles")
     print(f"[Peak Mem] Kyber decaps - Current: {current / 1024:.1f} KB | Peak: {peak / 1024:.1f} KB")
     tracemalloc.stop()
     key = shared_secret[:16]
     # === Measure memory for Ascon decryption ===
     tracemalloc.start()
     start_decrypt_time = time.perf_counter()  # Best for measuring short durations
-    start_decrypt_cycles = cycles.rdtsc()
+    # start_decrypt_cycles = cycles.rdtsc()
     decrypted = ascon_decrypt(key=key, nonce=nonce, ciphertext=ciphertext, associateddata=b"")
-    end_decrypt_cycles = cycles.rdtsc()
+    # end_decrypt_cycles = cycles.rdtsc()
     end_decrypt_time = time.perf_counter()  # Best for measuring short durations
     snapshot_decrypt = tracemalloc.take_snapshot()
     top_decrypt = snapshot_decrypt.statistics('lineno')
@@ -121,7 +123,7 @@ def secure_ecg():
     current, peak = tracemalloc.get_traced_memory()
     decrypt_elapsed_time = end_decrypt_time - start_decrypt_time
     print(f"Elapsed time for decrypt : {decrypt_elapsed_time:.6f} seconds")
-    print(f"[Cycles] decrypt cycle: {end_decrypt_cycles - start_decrypt_cycles} cycles")
+    # print(f"[Cycles] decrypt cycle: {end_decrypt_cycles - start_decrypt_cycles} cycles")
     print(f"[Peak Mem] Ascon decrypt - Current: {current / 1024:.1f} KB | Peak: {peak / 1024:.1f} KB")
     tracemalloc.stop()
     if decrypted is None:
