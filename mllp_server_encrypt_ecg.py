@@ -203,7 +203,7 @@ class MLLPServer(threading.Thread):
 
                 ack = build_ack(msg, "AA", "ORU received and decrypted")
                 conn.sendall(wrap_mllp(ack.to_er7()))
-                print("[INFO] ORU^R01 processed successfully.")
+                print("[INFO] ORU^R01 processed successfully >>.")
 
             else:
                 ack = build_ack(msg, "AE", f"Unsupported message type {msg_type}")
