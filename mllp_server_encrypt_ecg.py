@@ -8,17 +8,10 @@ from datetime import datetime
 from json import loads, dumps
 from xml.etree import ElementTree as ET
 
-from dotenv import load_dotenv
 from hl7apy.core import Message
 from hl7apy.parser import parse_message
 from kyber_py.ml_kem import ML_KEM_512
 from pyascon.ascon import ascon_decrypt  # Ascon-128
-
-# ----------------- Load env -----------------
-load_dotenv()
-SERVER_HOST = os.getenv("SERVER_HOST", "0.0.0.0")
-SERVER_PORT = int(os.getenv("SERVER_PORT", 2575))
-SAVE_DIR = os.getenv("SAVE_DIR", "./inbox")
 
 # ----------------- MLLP framing -----------------
 MLLP_SB = b"\x0b"  # <VT>
@@ -169,7 +162,7 @@ class MLLPServer(threading.Thread):
                     conn.sendall(wrap_mllp(ack.to_er7()))
                     return
 
-                # === SAVE ENCRYPTED FILE ===
+                # Save encrypted file
                 timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
                 enc_filename = f"ecg_encrypted_{timestamp}.bin"
                 enc_filepath = os.path.join(self.save_dir, enc_filename)
@@ -192,18 +185,23 @@ class MLLPServer(threading.Thread):
                     dt_format = obx_map.get("ECG_FORMAT", "JSON").upper()
 
                     if dt_format == "XML":
-                        dec_filename = f"ecg_decrypted_{timestamp}.xml"
-                        dec_filepath = os.path.join(self.save_dir, dec_filename)
-                        with open(dec_filepath, "w", encoding="utf-8") as f:
+                        filename = f"ecg_decrypted_{timestamp}.xml"
+                        filepath = os.path.join(self.save_dir, filename)
+                        with open(filepath, "w", encoding="utf-8") as f:
                             f.write(decrypted_str)
-                        print(f"[INFO] Decrypted ECG XML saved to {dec_filepath}")
+                        print(f"[INFO] Decrypted ECG XML saved to {filepath}")
                     else:
-                        json_data = loads(decrypted_str)
-                        dec_filename = f"ecg_decrypted_{timestamp}.json"
-                        dec_filepath = os.path.join(self.save_dir, dec_filename)
-                        with open(dec_filepath, "w", encoding="utf-8") as f:
-                            f.write(dumps(json_data, indent=2))
-                        print(f"[INFO] Decrypted ECG JSON saved to {dec_filepath}")
+                        try:
+                            json_data = loads(decrypted_str)
+                            filename = f"ecg_decrypted_{timestamp}.json"
+                            filepath = os.path.join(self.save_dir, filename)
+                            with open(filepath, "w", encoding="utf-8") as f:
+                                f.write(dumps(json_data, indent=2))
+                            print(f"[INFO] Decrypted ECG JSON saved to {filepath}")
+                        except Exception as e:
+                            ack = build_ack(msg, "AE", f"Failed to parse JSON: {e}")
+                            conn.sendall(wrap_mllp(ack.to_er7()))
+                            return
 
                 except Exception as e:
                     ack = build_ack(msg, "AE", f"Ascon decrypt failed: {e}")
@@ -236,7 +234,12 @@ class MLLPServer(threading.Thread):
 
 
 def main():
-    MLLPServer(SERVER_HOST, SERVER_PORT, SAVE_DIR).run()
+    ap = argparse.ArgumentParser(description="HL7 MLLP Server (PK responder + decrypt ORU)")
+    ap.add_argument("--host", default="0.0.0.0")
+    ap.add_argument("--port", type=int, default=2575)
+    ap.add_argument("--save-dir", default="./inbox", help="Directory to write decrypted ECG files")
+    args = ap.parse_args()
+    MLLPServer(args.host, args.port, args.save_dir).run()
 
 
 if __name__ == "__main__":
