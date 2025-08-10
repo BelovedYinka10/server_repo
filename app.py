@@ -12,7 +12,7 @@ import base64
 import time
 
 # import cycles  # Your custom rdtsc module
-
+dt_format = os.getenv("DATA_FORMAT")
 
 app = Flask(__name__)
 
@@ -81,7 +81,7 @@ def secure_ecg():
     nonce = base64.b64decode(data["nonce"])
     ciphertext = base64.b64decode(data["ciphertext"])
     kyber_ct = base64.b64decode(data["kyber_ciphertext"])
-    dt_format = data.get("dt_format", "JSON")  # <-- Get the format sent by client
+    dt_format = data.get("dt_format", "JSON")
 
     print("server_raw_ct", kyber_ct)
 
@@ -94,15 +94,8 @@ def secure_ecg():
     start_decaps_time = time.perf_counter()
     shared_secret = ML_KEM_512.decaps(sk, kyber_ct)
     end_decaps_time = time.perf_counter()
-    snapshot_decaps = tracemalloc.take_snapshot()
-    top_decaps = snapshot_decaps.statistics('lineno')
     decaps_elapsed_time = end_decaps_time - start_decaps_time
-
-    print("\n[Memory] Kyber decapsulation:")
-    for i, stat in enumerate(top_decaps[:5], 1):
-        print(f"{i}. {stat}")
     current, peak = tracemalloc.get_traced_memory()
-    print(f"Elapsed time for decaps : {decaps_elapsed_time:.6f} seconds")
     print(f"[Peak Mem] Kyber decaps - Current: {current / 1024:.1f} KB | Peak: {peak / 1024:.1f} KB")
     tracemalloc.stop()
 
@@ -113,14 +106,8 @@ def secure_ecg():
     start_decrypt_time = time.perf_counter()
     decrypted = ascon_decrypt(key=key, nonce=nonce, ciphertext=ciphertext, associateddata=b"")
     end_decrypt_time = time.perf_counter()
-    snapshot_decrypt = tracemalloc.take_snapshot()
-    top_decrypt = snapshot_decrypt.statistics('lineno')
-    print("\n[Memory] Ascon decryption:")
-    for i, stat in enumerate(top_decrypt[:5], 1):
-        print(f"{i}. {stat}")
-    current, peak = tracemalloc.get_traced_memory()
     decrypt_elapsed_time = end_decrypt_time - start_decrypt_time
-    print(f"Elapsed time for decrypt : {decrypt_elapsed_time:.6f} seconds")
+    current, peak = tracemalloc.get_traced_memory()
     print(f"[Peak Mem] Ascon decrypt - Current: {current / 1024:.1f} KB | Peak: {peak / 1024:.1f} KB")
     tracemalloc.stop()
 
@@ -133,29 +120,32 @@ def secure_ecg():
         if dt_format.upper() == "XML":
             from xml.etree import ElementTree as ET
             root = ET.fromstring(decrypted_str)
-            records = []
-            for record in root.findall("Record"):
-                entry = {child.tag: child.text for child in record}
-                records.append(entry)
+            records = [{child.tag: child.text for child in record} for record in root.findall("Record")]
         else:
             import json
             records = json.loads(decrypted_str)
     except Exception as e:
         return f"Failed to parse decrypted payload: {e}", 400
 
-    # Convert to DataFrame
+    # === Save both encrypted and decrypted ECG ===
     import pandas as pd
     import os
-    df = pd.DataFrame(records)
-
-    # Save decrypted ECG as JSON
     athlete_dir = os.path.join(app.root_path, "static", f"athlete_{athlete_id}")
     os.makedirs(athlete_dir, exist_ok=True)
-    save_path = os.path.join(athlete_dir, "decrypted_ecg.json")
-    df.to_json(save_path, orient="records")
-    print(f"[INFO] ECG data saved to {save_path}")
 
-    return "ECG received and decrypted successfully", 200
+    # Save encrypted file
+    enc_path = os.path.join(athlete_dir, "encrypted_ecg.enc")
+    with open(enc_path, "wb") as f:
+        f.write(ciphertext)
+    print(f"[INFO] Encrypted ECG saved to {enc_path}")
+
+    # Save decrypted file
+    save_path = os.path.join(athlete_dir, "decrypted_ecg.json")
+    df = pd.DataFrame(records)
+    df.to_json(save_path, orient="records")
+    print(f"[INFO] Decrypted ECG saved to {save_path}")
+
+    return "ECG received, saved, and decrypted successfully", 200
 
 
 @app.route("/ecg-viewer")
@@ -164,7 +154,11 @@ def ecg_viewer():
         athlete_index = int(request.args.get("athlete", 1))
         athlete_index = max(1, min(athlete_index, 28))
 
+        # if dt_format.upper() == "XML":
         file_path = os.path.join(app.root_path, "static", f"athlete_{athlete_index}", "decrypted_ecg.json")
+        # else:
+        #     file_path = os.path.join(app.root_path, "static", f"athlete_{athlete_index}", "decrypted_ecg.xml")
+
         if not os.path.exists(file_path):
             return f"❌ File not found: {file_path}", 404
 
