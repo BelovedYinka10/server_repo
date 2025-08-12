@@ -6,7 +6,6 @@ import socket
 import threading
 from datetime import datetime
 from json import loads, dumps
-from xml.etree import ElementTree as ET
 
 from hl7apy.core import Message
 from hl7apy.parser import parse_message
@@ -26,7 +25,10 @@ def wrap_mllp(hl7_text: str) -> bytes:
 def read_mllp(sock: socket.socket) -> str:
     buf = bytearray()
     while True:
-        chunk = sock.recv(4096)
+        try:
+            chunk = sock.recv(4096)
+        except ConnectionResetError:
+            break
         if not chunk:
             break
         buf.extend(chunk)
@@ -52,7 +54,10 @@ def build_ack(orig_msg, ack_code="AA", text="OK"):
     ack.msh.msh_11 = "P"
     ack.msh.msh_12 = "2.5"
     ack.msa.msa_1 = ack_code
-    ack.msa.msa_2 = (orig_msg.msh.msh_10.to_er7() if orig_msg and orig_msg.msh and orig_msg.msh.msh_10 else "UNKNOWN")
+    try:
+        ack.msa.msa_2 = (orig_msg.msh.msh_10.to_er7() if orig_msg and orig_msg.msh and orig_msg.msh.msh_10 else "UNKNOWN")
+    except Exception:
+        ack.msa.msa_2 = "UNKNOWN"
     ack.msa.msa_3 = text
     return ack
 
@@ -70,7 +75,10 @@ def build_rsp_k11(orig_msg, b64_public_key: str):
     rsp.msh.msh_12 = "2.5"
 
     rsp.msa.msa_1 = "AA"
-    rsp.msa.msa_2 = (orig_msg.msh.msh_10.to_er7() if orig_msg and orig_msg.msh and orig_msg.msh.msh_10 else "UNKNOWN")
+    try:
+        rsp.msa.msa_2 = (orig_msg.msh.msh_10.to_er7() if orig_msg and orig_msg.msh and orig_msg.msh.msh_10 else "UNKNOWN")
+    except Exception:
+        rsp.msa.msa_2 = "UNKNOWN"
 
     qak = rsp.add_segment("QAK")
     qak.qak_1 = "KYBER_PK"
@@ -130,14 +138,22 @@ class MLLPServer(threading.Thread):
             print(hl7_text.replace("\r", "\n"))
             print("----------------------------------------")
 
+            # Robust parse: try strict (validation_level=2), then lenient fallback
             try:
                 msg = parse_message(hl7_text, validation_level=2)
+            except Exception:
+                try:
+                    msg = parse_message(hl7_text, validation_level=1)
+                except Exception as e2:
+                    print("[ERROR] HL7 parse:", e2)
+                    nack = build_ack(None, ack_code="AE", text="Parse error")
+                    conn.sendall(wrap_mllp(nack.to_er7()))
+                    return
+
+            try:
                 msg_type = (msg.msh.msh_9.to_er7()).upper()
-            except Exception as e:
-                print("[ERROR] HL7 parse:", e)
-                nack = build_ack(Message("ACK", version="2.5"), ack_code="AE", text="Parse error")
-                conn.sendall(wrap_mllp(nack.to_er7()))
-                return
+            except Exception:
+                msg_type = "UNKNOWN"
 
             if msg_type.startswith("QBP^Q11"):
                 b64_pk = base64.b64encode(self.ek).decode()
@@ -153,6 +169,7 @@ class MLLPServer(threading.Thread):
                     conn.sendall(wrap_mllp(ack.to_er7()))
                     return
 
+                # Decode b64 payloads
                 try:
                     ciphertext = base64.b64decode(obx_map["ECG_CIPHERTEXT_B64"])
                     nonce = base64.b64decode(obx_map["NONCE_B64"])
@@ -162,14 +179,20 @@ class MLLPServer(threading.Thread):
                     conn.sendall(wrap_mllp(ack.to_er7()))
                     return
 
-                # Save encrypted file
+                # Save encrypted file (for audit)
                 timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
                 enc_filename = f"ecg_encrypted_{timestamp}.bin"
                 enc_filepath = os.path.join(self.save_dir, enc_filename)
-                with open(enc_filepath, "wb") as f:
-                    f.write(ciphertext)
-                print(f"[INFO] Encrypted ECG saved to {enc_filepath}")
+                try:
+                    with open(enc_filepath, "wb") as f:
+                        f.write(ciphertext)
+                    print(f"[INFO] Encrypted ECG saved to {enc_filepath}")
+                except Exception as e:
+                    ack = build_ack(msg, "AE", f"Failed to save encrypted file: {e}")
+                    conn.sendall(wrap_mllp(ack.to_er7()))
+                    return
 
+                # Kyber decapsulation
                 try:
                     shared_key = ML_KEM_512.decaps(self.dk, kyber_ct)
                     ascon_key = shared_key[:16]
@@ -178,10 +201,10 @@ class MLLPServer(threading.Thread):
                     conn.sendall(wrap_mllp(ack.to_er7()))
                     return
 
+                # Ascon decrypt + persist plaintext
                 try:
                     plaintext = ascon_decrypt(key=ascon_key, nonce=nonce, ciphertext=ciphertext, associateddata=b"")
                     decrypted_str = plaintext.decode()
-
                     dt_format = obx_map.get("ECG_FORMAT", "JSON").upper()
 
                     if dt_format == "XML":
@@ -216,6 +239,13 @@ class MLLPServer(threading.Thread):
                 ack = build_ack(msg, "AE", f"Unsupported message type {msg_type}")
                 conn.sendall(wrap_mllp(ack.to_er7()))
 
+        except Exception as e:
+            # Last-resort safety: never drop the socket without a framed response
+            try:
+                nack = build_ack(None, ack_code="AE", text=f"Server error: {e}")
+                conn.sendall(wrap_mllp(nack.to_er7()))
+            except Exception:
+                pass
         finally:
             try:
                 conn.close()
