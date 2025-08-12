@@ -142,18 +142,18 @@ def secure_ecg():
     print(f"[INFO] Encrypted ECG saved to {enc_path}")
     print(f"[INFO] Encrypted ECG saved to {enc_path}")
 
-    # Save decrypted file(s)
-    save_json_path = os.path.join(athlete_dir, "decrypted_ecg.json")
-    df = pd.DataFrame(records)
-    df.to_json(save_json_path, orient="records")
-    print(f"[INFO] Decrypted ECG (JSON) saved to {save_json_path}")
-
     # When DATA_FORMAT=XML also save the raw decrypted XML so the viewer can load XML directly
     if dt_format.upper() == "XML":
         save_xml_path = os.path.join(athlete_dir, "decrypted_ecg.xml")
         with open(save_xml_path, "w", encoding="utf-8") as f:
             f.write(decrypted_str)
         print(f"[INFO] Decrypted ECG (XML) saved to {save_xml_path}")
+    else:
+        # Save decrypted file(s)
+        save_json_path = os.path.join(athlete_dir, "decrypted_ecg.json")
+        df = pd.DataFrame(records)
+        df.to_json(save_json_path, orient="records")
+        print(f"[INFO] Decrypted ECG (JSON) saved to {save_json_path}")
 
     return "ECG received, saved, and decrypted successfully", 200
 
