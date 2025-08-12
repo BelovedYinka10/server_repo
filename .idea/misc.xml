@@ -3,5 +3,5 @@
   <component name="Black">
     <option name="sdkName" value="Python 3.13 (kyber_server)" />
   </component>
-  <component name="ProjectRootManager" version="2" project-jdk-name="Python 3.13 (kyber_server)" project-jdk-type="Python SDK" />
+  <component name="ProjectRootManager" version="2" project-jdk-name="Python 3.11 virtualenv at ~/.pyenv/versions/kyber_venv_s" project-jdk-type="Python SDK" />
 </project>

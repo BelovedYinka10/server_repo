@@ -12,7 +12,7 @@ import base64
 import time
 
 # import cycles  # Your custom rdtsc module
-dt_format = os.getenv("DATA_FORMAT")
+dt_format = os.getenv("DATA_FORMAT", "JSON")  # <-- default to JSON if unset
 
 app = Flask(__name__)
 
@@ -81,9 +81,6 @@ def secure_ecg():
     nonce = base64.b64decode(data["nonce"])
     ciphertext = base64.b64decode(data["ciphertext"])
     kyber_ct = base64.b64decode(data["kyber_ciphertext"])
-    dt_format = data.get("dt_format", "JSON")
-
-    print("server_raw_ct", kyber_ct)
 
     athlete_id = data["id"]
 
@@ -125,6 +122,7 @@ def secure_ecg():
             import json
             records = json.loads(decrypted_str)
     except Exception as e:
+        print(f"line 128 >> {e}")
         return f"Failed to parse decrypted payload: {e}", 400
 
     # === Save both encrypted and decrypted ECG ===
@@ -134,16 +132,28 @@ def secure_ecg():
     os.makedirs(athlete_dir, exist_ok=True)
 
     # Save encrypted file
+    # if dt_format.upper() == "XML":
+    #     enc_path = os.path.join(athlete_dir, "encrypted_ecg.enc")
+    # else:
     enc_path = os.path.join(athlete_dir, "encrypted_ecg.enc")
+
     with open(enc_path, "wb") as f:
         f.write(ciphertext)
     print(f"[INFO] Encrypted ECG saved to {enc_path}")
+    print(f"[INFO] Encrypted ECG saved to {enc_path}")
 
-    # Save decrypted file
-    save_path = os.path.join(athlete_dir, "decrypted_ecg.json")
+    # Save decrypted file(s)
+    save_json_path = os.path.join(athlete_dir, "decrypted_ecg.json")
     df = pd.DataFrame(records)
-    df.to_json(save_path, orient="records")
-    print(f"[INFO] Decrypted ECG saved to {save_path}")
+    df.to_json(save_json_path, orient="records")
+    print(f"[INFO] Decrypted ECG (JSON) saved to {save_json_path}")
+
+    # When DATA_FORMAT=XML also save the raw decrypted XML so the viewer can load XML directly
+    if dt_format.upper() == "XML":
+        save_xml_path = os.path.join(athlete_dir, "decrypted_ecg.xml")
+        with open(save_xml_path, "w", encoding="utf-8") as f:
+            f.write(decrypted_str)
+        print(f"[INFO] Decrypted ECG (XML) saved to {save_xml_path}")
 
     return "ECG received, saved, and decrypted successfully", 200
 
@@ -154,20 +164,43 @@ def ecg_viewer():
         athlete_index = int(request.args.get("athlete", 1))
         athlete_index = max(1, min(athlete_index, 28))
 
-        # if dt_format.upper() == "XML":
-        file_path = os.path.join(app.root_path, "static", f"athlete_{athlete_index}", "decrypted_ecg.json")
-        # else:
-        #     file_path = os.path.join(app.root_path, "static", f"athlete_{athlete_index}", "decrypted_ecg.xml")
+        # Choose source file based on DATA_FORMAT, with fallback
+        base_dir = os.path.join(app.root_path, "static", f"athlete_{athlete_index}")
+        if dt_format.upper() == "XML":
+            xml_path = os.path.join(base_dir, "decrypted_ecg.xml")
+            json_path = os.path.join(base_dir, "decrypted_ecg.json")
+            if os.path.exists(xml_path):
+                # Parse XML -> records list[dict]
+                from xml.etree import ElementTree as ET
+                with open(xml_path, "r", encoding="utf-8") as f:
+                    xml_text = f.read()
+                root = ET.fromstring(xml_text)
+                records = [{child.tag: child.text for child in record} for record in root.findall("Record")]
+            elif os.path.exists(json_path):
+                with open(json_path, "r") as f:
+                    records = json.load(f)
+            else:
+                return f"❌ File not found: {xml_path} or {json_path}", 404
+        else:
+            json_path = os.path.join(base_dir, "decrypted_ecg.json")
+            if not os.path.exists(json_path):
+                return f"❌ File not found: {json_path}", 404
+            with open(json_path, "r") as f:
+                records = json.load(f)
 
-        if not os.path.exists(file_path):
-            return f"❌ File not found: {file_path}", 404
-
-        with open(file_path, "r") as f:
-            records = json.load(f)
         df = pd.DataFrame(records)
 
-        time = df['time'].to_numpy()
+        # Ensure numeric columns where needed (time and lead values)
+        if "time" in df.columns:
+            df["time"] = pd.to_numeric(df["time"], errors="coerce")
+        time_arr = df['time'].to_numpy()
+
         all_leads = ['V6', 'V5', 'V4', 'V3', 'V2', 'V1', 'aVF', 'aVL', 'aVR', 'III', 'II', 'I']
+        # Cast available lead columns to numeric
+        for col in all_leads:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+
         lead_names = [lead for lead in all_leads if lead in df.columns]
         vertical_offsets = np.arange(len(lead_names)) * 2
         lead_names = lead_names[::-1]
@@ -177,9 +210,10 @@ def ecg_viewer():
         for i, lead in enumerate(lead_names):
             y = (df[lead].to_numpy() + vertical_offsets[i]).tolist()
             fig.add_trace(
-                go.Scatter(x=time.tolist(), y=y, mode='lines', line=dict(color='black', width=1), showlegend=False))
+                go.Scatter(x=time_arr.tolist(), y=y, mode='lines', line=dict(color='black', width=1), showlegend=False)
+            )
 
-        duration = time[-1] if len(time) > 0 else 0
+        duration = time_arr[-1] if len(time_arr) > 0 else 0
         shapes = []
         for t in np.arange(0, duration + 0.2, 0.2):
             shapes.append(dict(type='line', x0=t, x1=t, y0=vertical_offsets[-1] - 2, y1=vertical_offsets[0] + 2,
@@ -205,69 +239,10 @@ def ecg_viewer():
                                prev_index=max(1, athlete_index - 1),
                                next_index=min(28, athlete_index + 1))
     except Exception as e:
+        print(f" line 208 {e}")
         return f"❌ Failed to render ECG viewer: {e}", 500
 
 
-@app.route('/receive-hl7', methods=['POST'])
-def receive_hl7():
-    hl7_msg = request.data.decode('utf-8')
-
-    try:
-        # Parse the HL7 message
-        msg = parse_message(hl7_msg)
-
-        # Extract data
-        patient_id = msg.pid.pid_3.value
-        patient_name = msg.pid.pid_5.value
-        location = msg.pv1.pv1_3.value
-
-        print("HLS 7 DATA REEIVED", {
-            "PATIENT_ID": patient_id
-        })
-
-        return jsonify({
-            "status": "Message received",
-            "patient_id": patient_id,
-            "patient_name": patient_name,
-            "location": location
-        })
-    except Exception as e:
-        return jsonify({"error": str(e)}), 400
-
-
-@app.route('/hl_secure-ecg', methods=['POST'])
-def receive_encyrpted_hl7():
-    hl7_msg = request.data.decode('utf-8')
-
-    try:
-        # Parse the HL7 message
-        msg = parse_message(hl7_msg)
-
-        print(
-            msg.to_er7().replace("\r", "\n"))
-
-        # Extract data
-        # patient_id = msg.pid.pid_3.value
-        # patient_name = msg.pid.pid_5.value
-        # location = msg.pv1.pv1_3.value
-
-        print("vvv", msg.obx.obx_5.value)
-
-        print("HLS 7 DATA REEIVED", {
-            "PATIENT_ID": "patient_id"
-
-        })
-
-        return jsonify({
-            "status": "Message received",
-            # "patient_id": patient_id,
-            # "patient_name": patient_name,
-            # "location": location
-        })
-    except Exception as e:
-        return jsonify({"error": str(e)}), 400
-
-
 if __name__ == "__main__":
-    print(f"[SERVER STARTED] Public Key Path: {pubkey_path}")
+    print(f"[SERVER STARTED] Public Key Path: {pubkey_path}, DATA FORMAR {dt_format}")
     app.run(host="0.0.0.0", port=5070, debug=True)
