@@ -121,21 +121,30 @@ GET /ecg-viewer?athlete=<id>
 python 3.11 is required 
 steps to follow to run the http 
 
-1) python3 -m venv venv 
-2) activate the venv
-3) pip install -r requirement.txt
-4) python3 app.py # USE THIS FOR THE HTTP 
-5) go to the url
+1) git clone repo
+2) cd server_repo 
+3) python3 -m venv venv 
+4) activate the venv using 
+ source venv/bin/activate  on linux/mac
+ .\venc\Scripts\activate on windows 
+5) python3 app.py # USE THIS FOR THE HTTP 
+6) go to the url
 ```
 
 ```bash
 python 3.11 is required 
 steps to follow to run the mllp 
 
-1) python3 -m venv venv 
-2) activate the venv
-3) pip install -r requirement.txt
-5) python mllp_hl7_server_app.py # this starts MLLP server
+1) git clone repo
+2) cd server_repo 
+3) python3 -m venv venv 
+4) activate the venv using 
+ source venv/bin/activate  on linux/mac
+ .\venc\Scripts\activate on windows 
+5) pip install -r requirement.txt
+6) python mllp_hl7_server_app.py 
+
+# this starts MLLP server
 ```
 
 
